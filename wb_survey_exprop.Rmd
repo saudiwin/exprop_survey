@@ -1,0 +1,283 @@
+---
+title: "Enterprise Surveys and Expopriation Risk"
+author: "Robert Kubinec"
+date: "December 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(haven)
+require(lubridate)
+```
+
+## Data
+
+I am using the full release of World Bank Enterprise Survey data:
+
+```{r data_load}
+wb_data <- readRDS('data/wb_data.rds') %>% as_factor
+# get question labels
+question_labels <- sapply(wb_data,attr,'label')
+all_qs <- data_frame(q_num=question_labels,q_label=names(question_labels))
+```
+
+It contains `r nrow(wb_data)` observations from `r length(unique(wb_data$country))` countries.
+
+Unfortunately, the data do not contain questions about expropriation risk faced by firms. I go over some proxies that come up in this data that we can use to get an initial sense of things:
+
+## Indicators: Corruption 
+
+Some of the following indicators reflect firm perceptions of corruption:
+
+
+----------------------------------------------------------------------
+Number  Question                     Answers (in increasing order)
+------  ---------------------------  ----------------------------------
+c5      Informal Gift/Payment         No (66%), Yes (12.4%)
+        Expected Or Requested For 
+        An Electrical Connection?
+ 
+c14     When You Applied For A        No (52%), Yes (8.7%)
+        Water Connection, Was 
+        An Informal Gift/Payment 
+        Requested?
+
+c21     When You Applied For A        No (72%), Yes (5.3%)
+        Telephone Connection 
+        Was An Informal 
+        Gift Requested?
+
+d5a     In Clearing Exports           No (77%), Yes (11%)
+        Through Customs,Informal 
+        Gift/Payment Expected 
+        Or Requested?
+        
+d15a    In Clearing Imports           No (86%), Yes (9.5%)
+        Through Customs,
+        Informal Gift/Payment 
+        Expected Or Requested?
+        
+g4      Informal Gift/Payment         No (60%), Yes (15%)
+        Expected Or Requested 
+        For A Construction-
+        Related Permit
+
+j5      In Any Of These               No (80%), Yes (13%)
+        Inspections Was A 
+        Gift/Informal 
+        Payment Requested ?
+
+j6      % Of Contract Value           Mean = 4.7%, 
+        Avg. Firm Pays In             Median = 5%,  
+        Informal Gifts To             SD=0.6%
+        Govt To Secure 
+        Contract?
+
+j7a     Percent Of Total              Mean=4.5%,     
+        Annual Sales Paid             Median=5%,
+        In Informal                   SD=4%
+        Payments
+        
+j7b     Total Annual                  Mean=6.9%,
+        Informal Payment              Median=6%,
+                                      SD=11%
+
+j12     When You Applied              No (66%), Yes (9.8%)
+        For An Import                 
+        License, 
+        Was An Informal 
+        Gift/Payment 
+        Requested?
+
+j15     When You                      No (73%), Yes (14%)
+        Applied For 
+        Operating License 
+        Was An Informal 
+        Gift/Payment 
+        Requested?
+
+j30f    How Much Of                   No obstacle (30%),
+        An Obstacle:                  Major obstacle (18%),
+        Corruption                    Very severe obstacle (17%),
+                                      Moderate obstacle (16%),
+                                      Minor obstacle (15%)
+
+m1a     Biggest Obstacle              Corruption (8%),
+        Affecting The                 Largest = Access to     
+        Operation Of                  Finance (15%)  
+        This Establishment
+                                      
+--------------------------------------------------------------------------
+
+## Indicators: Court System
+
+
+----------------------------------------------------------------------
+Number  Question                     Answers (in increasing order)
+------  ---------------------------  ----------------------------------
+h30     How Much Of An Obstacle:      No obstacle (48%), 
+        Courts                        Minor obstacle (18%),
+                                      Moderate obstacle (13%),
+                                      Major obstacle (9%),
+                                      Very severe obstacle (5%)
+                                      
+j1a     The court system is fair,     Tend to Agree (31%), 
+        impartial and uncorrupted     Tend to Disagree (29%),
+                                      Strongly Disagree (23%)
+                                      Strongly Agree (12%)
+                                      
+h7a     Government officials’         Tend to Agree (28%),
+        interpretations of the        Tend to Disagree (27%),
+        laws and regulations          Strongly Disagree (26%),
+        affecting this                Strongly Agree (11%)
+        establishment are 
+        consistent and 
+        predictable.
+-------------------------------------------------------------------------
+
+## Indicators: Crime & Theft
+
+----------------------------------------------------------------------
+Number  Question                     Answers (in increasing order)
+------  ---------------------------  ----------------------------------
+i1      In Last Fy, Did               Yes (62%), No (38%)
+        This Establishment Pay 
+        For Security?
+
+i4a     Losses Due To Theft,          Mean=4.5%,
+        Robbery, Vandalism Or         Median=4%,
+        Arson In Last Fiscal          SD=9.2%
+        Yr (% Of Sales)
+
+i30     How Much Of An                No obstacle (41%),
+        Obstacle: Crime, Theft        Minor obstacle (23%),
+        And Disorder?                 Moderate Obstacle (15%)
+                                      Major obstacle (12%),
+                                      Very severe obstacle (8%)
+-------------------------------------------------------------------------
+
+
+## Indicators: Government & Politics
+
+----------------------------------------------------------------------
+Number  Question                     Answers (in increasing order)
+------  ---------------------------  ----------------------------------
+j30e    How Much Of An Obstacle:      No obstacle (33%),
+        Political Instability         Major obstacle (18%),
+                                      Moderate Obstacle (17%),
+                                      Minor Obstacle (15%),
+                                      Very severe obstacle (14%)
+                                      
+j30c    How Much Of An Obstacle:      No obstacle (43%),
+        Business Licensing And        Minor obstacle (21%),  
+        Permits                       Moderate obstacle (18%),
+                                      Major obstacle (10%),
+                                      Very severe obstacle (4%)
+                                    
+j2      What % Of Senior              Mean=34%,
+        Management Time Was           Median=18%,
+        Spent In Dealing With         SD=32%
+        Govt Regulations?
+                                    
+-------------------------------------------------------------------------
+                                      
+--------------------------------------------------------------------------
+
+## Run Some IRT Analysis
+
+Now we can use `mirt` to scale the countries (groups) using the factors above.
+
+```{r to_mirt}
+require(stringr)
+require(forcats)
+require(mirt)
+require(missRanger)
+
+recode_func <- function(col) {
+  levels(col)[grepl(pattern = 'Spontaneous|-[0-9]',
+                      x=levels(col))] <- NA
+  return(col)
+}
+just_mirt <- select(wb_data,
+                    country,
+                    j30e,
+                    j2,
+                    j30c,
+                    i30,
+                    i4a,
+                    j7a,
+                    i1,
+                    h30,
+                    j1a,
+                    h7a,
+                    m1a,
+                    j30f,
+                    j15,
+                    j12,
+                    j5,
+                    j6,
+                    g4,
+                    d15a,
+                    d5a,
+                    c21,
+                    c14,
+                    c5) %>% 
+  mutate(year=str_extract(country,'[0-9]{4}'),
+         country=str_replace(country,'[0-9]{4}|-',
+                             "")) %>% 
+  mutate_all(funs(recode_func))
+
+group_by(just_mirt,country) %>% 
+  summarize(mean_time=mean(as.numeric(j2),na.rm = T)) %>% 
+  arrange(mean_time) %>% 
+  knitr::kable(.,caption = "Time Spent Dealing with Regulations")
+
+group_by(just_mirt,country,j30e) %>% 
+  count %>% 
+  filter(!is.na(j30e)) %>% 
+    group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(j30e,desc(n)) %>% 
+  knitr::kable(.,caption='How Much of an Obstacle Political Instability')
+group_by(just_mirt,country,j30c) %>% 
+  count %>% 
+    filter(!is.na(j30c)) %>% 
+    group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(j30c,desc(n)) %>% 
+  knitr::kable(.,caption='How Much of an Obstacle Business Licenses')
+group_by(just_mirt,country,i30) %>% 
+  count %>% 
+    filter(!is.na(i30)) %>% 
+    group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(i30,desc(n)) %>% 
+  knitr::kable(.,caption='How Much of an Obstacle Crime')
+group_by(just_mirt,country,i1) %>% 
+  count %>% 
+    filter(!is.na(i1)) %>% 
+  group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(i1,desc(n)) %>% 
+  knitr::kable(.,caption='Did Establishment pay for security?')
+group_by(just_mirt,country,j30f) %>% 
+  count %>% 
+    filter(!is.na(j30f)) %>% 
+  group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(j30f,desc(n)) %>% 
+  knitr::kable(.,caption='Corruption An Obstacle')
+group_by(just_mirt,country,h30) %>% 
+  count %>% 
+    filter(!is.na(h30)) %>% 
+  group_by(country) %>% 
+  mutate(n=n/sum(n)) %>% 
+  arrange(h30,desc(n)) %>% 
+  knitr::kable(.,caption='Courts An Obstacle')
+```
+
+
