@@ -13,7 +13,7 @@ qual_data <- read_csv("data/Expropriation+Survey_August+12,+2019_08.33.csv") %>%
   slice(-c(1:2)) %>% 
   filter(consent_fixed=="Agree" | consent_random=="Agree") %>% 
   mutate(EndDate=ymd_hms(EndDate)) %>% 
-  filter(EndDate>ymd_hms("2020-01-01 12:00:00")) %>% 
+  filter(EndDate>ymd_hms("2020-01-22 12:00:00")) %>% 
   mutate(outcome1=coalesce(experiment1_desk_1,exp1_short_1),
          outcome2=coalesce(experiment2_desk_1,exp2_short_1),
          outcome3=coalesce(experiment3_desk_1,exp3_short_1),
@@ -22,6 +22,20 @@ qual_data <- read_csv("data/Expropriation+Survey_August+12,+2019_08.33.csv") %>%
                               !is.na(exp1_short_1)~"Short",
                               TRUE~NA_character_),
          Duration=scale(as.numeric(`Duration (in seconds)`)))
+
+# let's test for difference between exp 1 and exp 2
+
+clicks_any <- !is.na(qual_data$clicks1) | !is.na(qual_data$clicks2) | !is.na(qual_data$clicks3) | !is.na(qual_data$clicks4)
+qual_data <- qual_data %>% 
+  mutate_at(vars(matches("click")), function(c,clicks_any) {
+    c <- ifelse(clicks_any,coalesce(as.numeric(c),0),c)
+  },clicks_any) %>% 
+    mutate(clicks_comb = as.numeric(clicks1) + as.numeric(clicks2) + 
+                      as.numeric(clicks3) + as.numeric(clicks4))
+
+t.test(formula=clicks_comb~short_long,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")))
+summary(glm(clicks_comb~mobile+short_long+position,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")),
+            family="poisson"))
 
 # need to run a model predicting outcome with treatments
 # using betareg
@@ -49,7 +63,8 @@ recode_currency <- function(col) {
 }
 
 exp1 <- select(qual_data,outcome="outcome1",
-               matches("[a-z][A|C|E|G]",ignore.case=F),
+               matches("[a-z][A|C|E|G]",ignore.case=F),clicksA="clicks1",clicksC="clicks2",clicksE="clicks3",
+               clicksG="clicks4",
                position,short_long,ResponseId,Duration,country_resp="country") %>% 
   mutate_at(vars(matches("assets|profit")),
             recode_currency) %>% 
@@ -60,7 +75,8 @@ exp1 <- select(qual_data,outcome="outcome1",
 
 
 exp2 <- select(qual_data,outcome="outcome2",
-               matches("[a-z][B|D|F|H]",ignore.case=F),
+               matches("[a-z][B|D|F|H]",ignore.case=F),clicksB="clicks1",clicksD="clicks2",
+               clicksF="clicks3",clicksH="clicks4",
                position,short_long,ResponseId,Duration,country_resp="country") %>% 
   mutate_at(vars(matches("assets|profit")),
             recode_currency) %>% 
@@ -99,6 +115,11 @@ combined <- combined %>%
 # make it wide
 
 combined <- spread(combined,key = "treatment",value="value")
+
+# replace missing click values with mean of respondent
+
+combined <- mutate(combined, clicks=as.numeric(clicks)) %>% 
+  mutate(clicks=ifelse(is.na(clicks),median(clicks,na.rm=T),clicks))
 
 combined <- mutate(combined,
                    connections=recode(connections,
@@ -180,7 +201,7 @@ combined <- mutate(combined,
 all_treat_fit <- betareg(outcome_prop ~ connections,
                          data = combined)
 
-all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long + Duration,
+all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long + Duration + clicks,
                          data = combined)
 
 summary(all_treat_fit_lm)
@@ -248,152 +269,43 @@ require(rstan)
 
 beta_logit_stan <- stan_model("beta_logit.stan")
 
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1)
-combine_degen <- filter(combined,outcome==0|outcome==100) %>% 
-  mutate(outcome=ifelse(outcome>0,1,outcome))
-
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_degen)
-
-to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
-                     N_degen=nrow(treat_matrix_degen),
-                     X=ncol(treat_matrix_prop)-1,
-                     outcome_prop=combine_prop$outcome_norm[as.numeric(row.names(treat_matrix_prop))],
-                     outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
-                     covar_degen=treat_matrix_degen[,-1],
-                     covar_prop=treat_matrix_prop[,-1])
-
-est_beta_logit <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000)
-
-# look at it for just Egypt
-
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,country_resp=="Egypt")
+combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,country_resp=="Egypt",!(clicks==0 & outcome_norm==0.5))
 combine_degen <- filter(combined,outcome==0|outcome==100,country_resp=="Egypt") %>% 
   mutate(outcome=ifelse(outcome>0,1,outcome))
 
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_degen)
+treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + clicks,data=combine_prop)
+treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + clicks,data=combine_degen)
+
+to_sample <- nrow(treat_matrix_prop)
+
+indices_degen <- sample(1:nrow(treat_matrix_degen),size=to_sample/2)
+indices_prop <- sample(1:nrow(treat_matrix_prop),size=to_sample/2)
 
 to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
                      N_degen=nrow(treat_matrix_degen),
                      X=ncol(treat_matrix_prop)-1,
-                     outcome_prop=combine_prop$outcome_norm[as.numeric(row.names(treat_matrix_prop))],
-                     outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
-                     covar_degen=treat_matrix_degen[,-1],
-                     covar_prop=treat_matrix_prop[,-1])
-
-est_beta_logit_egypt <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
-
-# now just Ukraine
-
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,country_resp=="Ukraine")
-combine_degen <- filter(combined,outcome==0|outcome==100,country_resp=="Ukraine") %>% 
-  mutate(outcome=ifelse(outcome>0,1,outcome))
-
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_degen)
-
-to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
-                     N_degen=nrow(treat_matrix_degen),
-                     X=ncol(treat_matrix_prop)-1,
-                     outcome_prop=combine_prop$outcome_norm[as.numeric(row.names(treat_matrix_prop))],
-                     outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
-                     covar_degen=treat_matrix_degen[,-1],
-                     covar_prop=treat_matrix_prop[,-1])
-
-est_beta_logit_ukraine <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
-
-# let's try with a correction for missing data
-
-
-beta_logit_stan_miss <- stan_model("beta_logit_missing.stan")
-
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1)
-combine_degen <- filter(combined,outcome==0|outcome==100) %>% 
-  mutate(outcome=ifelse(outcome>0,1,outcome))
-
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long+Duration,data=combine_prop)
-treat_matrix_miss <- treat_matrix_prop[,"Duration",drop=F]
-treat_matrix_prop <- treat_matrix_prop[,!(colnames(treat_matrix_prop) %in% colnames(treat_matrix_miss)),drop=F]
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_degen)
-
-to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
-                     N_degen=nrow(treat_matrix_degen),
-                     X=ncol(treat_matrix_prop)-1,
-                     X_miss=ncol(treat_matrix_miss),
                      outcome_prop=combine_prop$outcome_norm[as.numeric(row.names(treat_matrix_prop))],
                      outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
                      covar_degen=treat_matrix_degen[,-1],
                      covar_prop=treat_matrix_prop[,-1],
-                     covar_miss=treat_matrix_miss)
+                     N_pred_degen=to_sample/2,
+                     N_pred_prop=to_sample/2,
+                     indices_degen=indices_degen,
+                     indices_prop=indices_prop)
 
-est_beta_logit_miss <- sampling(beta_logit_stan_miss,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
+ord_beta_mydata <- sampling(beta_logit,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
 
-# let's try to simulate a new distribution for ordered beta regression
+yrep <- extract(ord_beta_mydata,"regen_all")[[1]]
 
-cutpoints <- c(-2,2) 
-# on the logit scale
+ppc_dens_overlay(y=c(to_stan_data$outcome_degen[indices_degen],to_stan_data$outcome_prop[indices_prop]),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
-N <- 1000
+ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen[indices_degen],to_stan_data$outcome_prop[indices_prop]),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
-X <- runif(N,min=-1,max=1)
-eta <- X*2.5
+rbeta_mean <- function(N,mu,phi) {
+  rbeta(N, mu * phi, (1 - mu) * phi)
+}
 
-# ancillary parameter of beta distribution
-phi <- 2
+kappa <- mean(extract(ord_beta_mydata,"kappa")[[1]])
 
-alpha <- -0.2
-gamma <- c(1.8, 0.4)
-mu1 <- alpha + eta
+hist(rbeta_mean(1000,0.5,3.5))
 
-low <- 1-plogis(mu1 - cutpoints[1])
-middle <- plogis(mu1-cutpoints[1]) - plogis(mu1-cutpoints[2])
-high <- plogis(mu1 - cutpoints[2])
-
-# we'll assum ethe same eta was used to generate outcomes
-
-out_beta <- rbeta(N,plogis(mu1) * phi, (1 - plogis(mu1)) * phi) 
-
-outcomes <- sapply(1:N, function(i) {
-  sample(1:3,size=1,prob=c(low[i],middle[i],high[i]))
-})
-# now pull full density
-final_out <- sapply(1:length(outcomes),function(i) {
-  if(outcomes[i]==1) {
-    return(0)
-  } else if(outcomes[i]==2) {
-    return(out_beta[i])
-  } else {
-    return(1)
-  }
-})
-
-# now we need a Stan file
-
-beta_logit <- stan_model("beta_logit.stan")
-
-to_bl <- list(N_degen=sum(final_out %in% c(0,1)),
-              N_prop=sum(final_out>0 & final_out<1),
-              X=1,
-              outcome_prop=final_out[final_out>0 & final_out<1],
-              outcome_degen=final_out[final_out %in% c(0,1)],
-              covar_prop=as.matrix(X[final_out>0 & final_out<1]),
-              covar_degen=as.matrix(X[final_out %in% c(0,1)]))
-
-fit_model <- sampling(beta_logit,data=to_bl,chains=2,cores=2,iter=1000)
-              
-# regenerate data and see how we do capturing it
-
-require(bayesplot)
-
-yrep <- extract(fit_model,"regen_all")[[1]]
-
-# use only a sample of draws
-
-yrep <- yrep[sample(1:nrow(yrep),size=100),]
-
-ppc_dens_overlay(y=final_out,yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
-
-# looks pretty good
-
-        
