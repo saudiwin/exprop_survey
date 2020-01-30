@@ -24,12 +24,18 @@ parameters {
   ordered[2] cutpoints; // cutpoints on ordered (latent) variable
   real<lower=0> kappa; // scale parameter for beta regression
 }
-model {
-  
-  // store matrix calculations
+transformed parameters {
+    // store matrix calculations
   
   vector[N_degen] calc_degen;
   vector[N_prop] calc_prop;
+  
+  // drop the intercepts so everything is relative to the cutpoints
+  calc_degen = covar_degen*X_beta;
+  calc_prop = covar_prop*X_beta;
+  
+}
+model {
   
   // vague priors
   alpha1 ~ normal(0,5);
@@ -37,10 +43,6 @@ model {
   X_beta ~ normal(0,5);
   kappa ~ exponential(1);
   cutpoints[2] - cutpoints[1] ~ normal(0,3);
-  
-  // drop the intercepts so everything is relative to the cutpoints
-  calc_degen = covar_degen*X_beta;
-  calc_prop = covar_prop*X_beta;
   
   // need separate counters for logit (0/1) and beta regression
   
@@ -67,7 +69,7 @@ generated quantities {
   
   vector[N_pred_degen+N_pred_prop] regen_degen; // which model is selected (degenerate or proportional)
   vector[N_pred_degen+N_pred_prop] regen_all; // final (combined) outcome -- defined as random subset of rows
-  //vector[N_pred_degen+N_pred_prop] like_log; // need to calculate this score for 
+  vector[N_pred_degen+N_pred_prop] ord_log; // store log calculation for loo
   
   if(N_pred_degen>0) {
      // first do degenerate outcomes 
@@ -76,6 +78,13 @@ generated quantities {
       
       // draw an outcome 0 / prop / 1
       regen_degen[i] = ordered_logistic_rng(covar_degen[indices_degen[i],]*X_beta,cutpoints);
+      
+      if(outcome_degen[i]==0) {
+        ord_log[i] = log1m_inv_logit(calc_degen[i] - cutpoints[1]);
+      } else {
+        ord_log[i] = log_inv_logit(calc_degen[i] - cutpoints[2]);
+      }
+      
       
       if(regen_degen[i]==1) {
         regen_all[i] = 0;
@@ -98,6 +107,9 @@ generated quantities {
         
         // draw an outcome 0 / prop / 1
         regen_degen[i+skip] = ordered_logistic_rng(covar_prop[indices_prop[i],]*X_beta,cutpoints);
+        
+        ord_log[i+skip] = log(inv_logit(calc_prop[indices_prop[i]] - cutpoints[1]) - inv_logit(calc_prop[indices_prop[i]] - cutpoints[2])) +
+                        beta_proportion_lpdf(outcome_prop[indices_prop[i]]|inv_logit(alpha2 + calc_prop[indices_prop[i]]),kappa);
         
         if(regen_degen[i+skip]==1) {
           regen_all[i+skip] = 0;

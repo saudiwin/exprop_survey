@@ -1,6 +1,7 @@
 data {
   int n;
-  vector[n] x; 
+  int k; // number of columns
+  matrix[n,k] x; 
   vector<lower=0, upper=1>[n] y;
 }
 transformed data {
@@ -24,13 +25,14 @@ transformed data {
   }
 }
 parameters {
-  vector[2] coef_a;
-  vector[2] coef_g;
-  vector[2] coef_m;
-  vector[2] coef_p;
+  vector[k] coef_a;
+  vector[k] coef_g;
+  vector[k] coef_m;
+  vector[k] coef_p;
+  vector[4] alpha;
 }
 transformed parameters {
-  vector<lower=0, upper=1>[n] alpha;
+  vector<lower=0, upper=1>[n] psi;
   vector<lower=0, upper=1>[n] gamma;
   vector[n] mu;
   vector<lower=0>[n] phi;
@@ -38,10 +40,10 @@ transformed parameters {
   vector<lower=0>[n] q;
 
   for (i in 1:n) {
-    alpha[i] = inv_logit(coef_a[1] + coef_a[2] * x[i]);
-    gamma[i] = inv_logit(coef_g[1] + coef_g[2] * x[i]);
-    mu[i] = inv_logit(coef_m[1] + coef_m[2] * x[i]);
-    phi[i] = exp(coef_p[1] + coef_p[2] * x[i]);
+    psi[i] = inv_logit(alpha[1] + x[i,]*coef_a);
+    gamma[i] = inv_logit(alpha[2] + x[i,]*coef_g);
+    mu[i] = inv_logit(alpha[3] + x[i,]*coef_m);
+    phi[i] = exp(alpha[4] + x[i,]*coef_p);
     p[i] = mu[i] * phi[i];
     q[i] = phi[i] - mu[i] * phi[i];
   }
@@ -51,12 +53,55 @@ model {
   coef_g ~ normal(0, 1);
   coef_m ~ normal(0, 1);
   coef_p ~ normal(0, 1);
-  is_discrete ~ bernoulli(alpha); 
+  alpha ~ normal(0,1);
+  
+  // is_discrete ~ bernoulli(psi); 
+  // for (i in 1:n) {
+  //   if (is_discrete[i] == 1) {
+  //     y_discrete[i] ~ bernoulli(gamma[i]);
+  //   } else {
+  //     y[i] ~ beta(p[i], q[i]);
+  //   }
+  // }
+  
   for (i in 1:n) {
-    if (is_discrete[i] == 1) {
-      y_discrete[i] ~ bernoulli(gamma[i]);
+    if (y[i] == 0) {
+      target += log(psi[i]) + log1m(gamma[i]);
+    } else if (y[i] == 1) {
+      target += log(psi[i]) + log(gamma[i]);
     } else {
-      y[i] ~ beta(p[i], q[i]);
+      target += log1m(psi[i]) + beta_lpdf(y[i] | p[i], q[i]);
     }
   }
+}
+generated quantities {
+  vector[n] zoib_log;
+  vector[n] zoib_regen;
+  vector[n] is_discrete_regen;
+  
+  for (i in 1:n) {
+    if (y[i] == 0) {
+      zoib_log[i] = log(psi[i]) + log1m(gamma[i]);
+    } else if (y[i] == 1) {
+      zoib_log[i] = log(psi[i]) + log(gamma[i]);
+    } else {
+      zoib_log[i] = log1m(psi[i]) + beta_lpdf(y[i] | p[i], q[i]);
+    }
+  }
+  
+  for(i in 1:n) {
+    
+    is_discrete_regen[i] = bernoulli_rng(psi[i]);
+    
+    if(is_discrete_regen[i]==0) {
+      zoib_regen[i] = beta_rng(p[i], q[i]);
+    } else {
+      zoib_regen[i] = bernoulli_rng(gamma[i]);
+    }
+    
+  }
+  
+  
+  
+  zoib_log += bernoulli_lpmf(is_discrete|psi);
 }
