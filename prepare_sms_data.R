@@ -17,10 +17,12 @@ jotform <- read_csv("data/Venezuela-Egypt-Ukraine-Mobile-Credit.csv")
 names(jotform) <- c("Submission Date",
                     "Respondent ID",
                     "Network",
-                    "Number")
+                    "Number",
+                    "Number2")
 
 to_sms <- jotform %>% 
-  mutate(Country=case_when(Network %in% c("Kyivstar",
+  mutate(Number=coalesce(Number,Number2),
+         Country=case_when(Network %in% c("Kyivstar",
                                           "Lifecell",
                                           "Yezzz!",
                                           "3Mob",
@@ -32,7 +34,7 @@ to_sms <- jotform %>%
                                             "Mobinil",
                                            "Vodafone")~"egypt"),
          just_credit=case_when(Country=="ukraine"~"27 UAH",
-                               Country=="venezuela"~"15000 VES",
+                               Country=="venezuela"~"60000 VES",
                                Country=="egypt" & Network %in% c("Etisalat",
                                                                  "Vodafone")~"15 LE",
                                Country=="egypt"~"60 LE"),
@@ -49,7 +51,8 @@ to_sms <- jotform %>%
                           venezuela="+58"),
          Network=recode(Network,
                         Movistar="Prepaid Movistar mobile top up",
-                        Movilnet="Prepaid Movilnet mobile top up"))
+                        Movilnet="Prepaid Movilnet mobile top up",
+                        Digitel="Prepaid Digitel mobile top up"))
 
 # check for multiple submissions
 

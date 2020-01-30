@@ -9,7 +9,7 @@ require(readr)
 require(lubridate)
 
 # change path to reflect most recent data from Qualtrics
-qual_data <- read_csv("data/Expropriation+Survey_August+12,+2019_08.33.csv") %>% 
+qual_data <- read_csv("data/Expropriation+Survey_August+21,+2019_08.25.csv") %>% 
   slice(-c(1:2)) %>% 
   filter(consent_fixed=="Agree" | consent_random=="Agree") %>% 
   mutate(EndDate=ymd_hms(EndDate)) %>% 
@@ -33,9 +33,17 @@ qual_data <- qual_data %>%
     mutate(clicks_comb = as.numeric(clicks1) + as.numeric(clicks2) + 
                       as.numeric(clicks3) + as.numeric(clicks4))
 
-t.test(formula=clicks_comb~short_long,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")))
-summary(glm(clicks_comb~mobile+short_long+position,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")),
+t.test(formula=clicks_comb~short_long,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00"),clicks_comb<50))
+kruskal.test(formula=clicks_comb~short_long,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")))
+wilcox.test(formula=clicks_comb~short_long,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00")),paired=F)
+summary(glm(clicks_comb~mobile+short_long+position,data=filter(qual_data,EndDate>ymd_hms("2020-01-22 12:00:00"),clicks_comb<50),
             family="poisson"))
+
+qual_data %>% 
+  ggplot(aes(x=clicks_comb)) +
+  geom_histogram() +
+  facet_wrap(~short_long) +
+  theme_minimal()
 
 # need to run a model predicting outcome with treatments
 # using betareg
@@ -266,6 +274,7 @@ summary(all_treat_fit_lm)
 # implement a Stan model
 
 require(rstan)
+require(bayesplot)
 
 beta_logit_stan <- stan_model("beta_logit.stan")
 
@@ -293,7 +302,9 @@ to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
                      indices_degen=indices_degen,
                      indices_prop=indices_prop)
 
-ord_beta_mydata <- sampling(beta_logit,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
+ord_beta_mydata <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
+
+stan_plot(ord_beta_mydata,"X_beta")
 
 yrep <- extract(ord_beta_mydata,"regen_all")[[1]]
 

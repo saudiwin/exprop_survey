@@ -3,6 +3,7 @@ data {
   int k; // number of columns
   matrix[n,k] x; 
   vector<lower=0, upper=1>[n] y;
+  int run_gen; // whether to use generated quantities
 }
 transformed data {
   int<lower=0, upper=1> is_discrete[n];
@@ -55,7 +56,7 @@ model {
   coef_p ~ normal(0, 1);
   alpha ~ normal(0,1);
   
-  // is_discrete ~ bernoulli(psi); 
+  // is_discrete ~ bernoulli(psi);
   // for (i in 1:n) {
   //   if (is_discrete[i] == 1) {
   //     y_discrete[i] ~ bernoulli(gamma[i]);
@@ -75,11 +76,12 @@ model {
   }
 }
 generated quantities {
-  vector[n] zoib_log;
-  vector[n] zoib_regen;
-  vector[n] is_discrete_regen;
+  vector[run_gen==1 ? n: 0] zoib_log;
+  vector[run_gen==1 ? n: 0] zoib_regen;
+  vector[run_gen==1 ? n: 0] is_discrete_regen;
   
-  for (i in 1:n) {
+  if(run_gen==1) {
+    for (i in 1:n) {
     if (y[i] == 0) {
       zoib_log[i] = log(psi[i]) + log1m(gamma[i]);
     } else if (y[i] == 1) {
@@ -103,5 +105,7 @@ generated quantities {
   
   
   
-  zoib_log += bernoulli_lpmf(is_discrete|psi);
+  //zoib_log += bernoulli_lpmf(is_discrete|psi);
+  }
+  
 }

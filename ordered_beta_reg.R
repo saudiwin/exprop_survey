@@ -74,7 +74,8 @@ to_bl <- list(N_degen=sum(final_out %in% c(0,1)),
               N_pred_degen=sum(final_out %in% c(0,1)),
               N_pred_prop=sum(final_out>0 & final_out<1),
               indices_degen=1:(sum(final_out %in% c(0,1))),
-              indices_prop=1:(sum(final_out>0 & final_out<1)))
+              indices_prop=1:(sum(final_out>0 & final_out<1)),
+              run_gen=1)
 
 fit_model <- sampling(beta_logit,data=to_bl,chains=2,cores=2,iter=1000)
 
@@ -117,6 +118,8 @@ yrep_betareg <- posterior_predict(betareg_fit,draws=100)
 
 ppc_dens_overlay(y=final_out,yrep=yrep_betareg) + ggtitle("Posterior Predictive Distribution for Rstanarm Beta Regression",subtitle="N=1000, Transformed to (0,1) Scale")
 
+ppc_dens_overlay(y=final_out_scale,yrep=yrep_betareg) + ggtitle("Posterior Predictive Distribution for Rstanarm Beta Regression",subtitle="N=1000, Transformed to (0,1) Scale")
+
 # Tends to over/under predict middle and outliers (i.e. 0/1)
 
 # now try the ZOIB
@@ -126,12 +129,13 @@ x <- as.matrix(X)
 zoib_fit <- sampling(zoib_model,data=list(n=length(final_out),
                                           y=final_out,
                                           k=ncol(x),
-                                          x=x),chains=2,cores=2,iter=1000)
+                                          x=x,
+                                          run_gen=1),chains=2,cores=2,iter=1000)
 
 # this is X_beta
 print(zoib_fit,pars="coef_m")
 yrep_zoib <- extract(zoib_fit,"zoib_regen")[[1]]
-ppc_ecdf_overlay(y=final_out,yrep=yrep_zoib) + 
+ppc_dens_overlay(y=final_out,yrep=yrep_zoib) + 
   ggtitle("Empirical Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
 # this one is quite close to what I had, slightly under
@@ -171,18 +175,25 @@ loo_betareg <- loo(betareg_fit)
 
 loo_zoib <- loo(zoib_fit,"zoib_log")
 
-compare(loo_ordbeta,loo_betareg,loo_zoib)
+loo_compare(loo_ordbeta,loo_zoib)
 
 # let's do some simulations
 
-simul_data <- tibble(X_beta=runif(N,-2,2),
-                     kappa=runif(N,0.5,4),
-                     cutpoints1=runif(N,-5,-1)) %>% 
-              mutate(cutpoints2=cutpoints+runif(N,0.5,5))
+N_rep <- 2000
 
-all_simul_data <- lapply(1:nrow(simul_data), function(i) {
+simul_data <- tibble(N=round(runif(N_rep,100,2000),0),
+                     X_beta=runif(N_rep,-2,2),
+                     kappa=runif(N_rep,0.5,4),
+                     cutpoints1=runif(N_rep,-5,-1)) %>% 
+              mutate(cutpoints2=cutpoints+runif(N_rep,0.5,5))
+
+all_simul_data <- parallel::mclapply(1:nrow(simul_data), function(i) {
   this_data <- slice(simul_data,i)
-  print(paste0("Now on row ",i))
+  cat(file = "simul_status.txt",paste0("Now on row ",i),append = T)
+  
+  N <- this_data$N
+  
+  X <- runif(N,-2,2)
   
   X_beta <- this_data$X_beta
   eta <- X*X_beta
@@ -229,11 +240,6 @@ all_simul_data <- lapply(1:nrow(simul_data), function(i) {
   
   # now fit ordinal beta
   
-  to_sample <- 400
-  
-  indices_degen <- sample(1:length(X[final_out %in% c(0,1)]),size=to_sample/2)
-  indices_prop <- sample(1:length(X[final_out>0 & final_out<1]),size=to_sample/2)
-  
   to_bl <- list(N_degen=sum(final_out %in% c(0,1)),
                 N_prop=sum(final_out>0 & final_out<1),
                 X=1,
@@ -244,7 +250,8 @@ all_simul_data <- lapply(1:nrow(simul_data), function(i) {
                 N_pred_degen=sum(final_out %in% c(0,1)),
                 N_pred_prop=sum(final_out>0 & final_out<1),
                 indices_degen=1:(sum(final_out %in% c(0,1))),
-                indices_prop=1:(sum(final_out>0 & final_out<1)))
+                indices_prop=1:(sum(final_out>0 & final_out<1)),
+                run_gen=1)
   
   fit_model <- sampling(beta_logit,data=to_bl,chains=1,cores=1,iter=1000)
   
@@ -253,17 +260,22 @@ all_simul_data <- lapply(1:nrow(simul_data), function(i) {
   zoib_fit <- sampling(zoib_model,data=list(n=length(final_out),
                                             y=final_out,
                                             k=ncol(x),
-                                            x=x),chains=1,cores=1,iter=1000)
+                                            x=x,
+                                            run_gen=1),chains=1,cores=1,iter=1000,pars=c("coef_m","zoib_regen","zoib_log"))
   
   final_out_scale <- (final_out * (length(final_out) - 1) + .5) / length(final_out)
   
   betareg_fit <- stan_betareg(formula = outcome~X,data=tibble(outcome=final_out_scale,
                                                               X=X),chains=1,cores=1,iter=1000)
   
+  yrep_betareg <- posterior_predict(betareg_fit,draws=100)
+  
   # do a second one with just non0/non1 data
   
   betareg_fit2 <- stan_betareg(formula = outcome~X,data=tibble(outcome=final_out[final_out>0 & final_out<1],
                                                                X=X[final_out>0 & final_out<1]),chains=1,cores=1,iter=1000)
+  
+  yrep_betareg2 <- posterior_predict(betareg_fit2,draws=100)
   
   # now return the full data frame
   
@@ -272,30 +284,64 @@ all_simul_data <- lapply(1:nrow(simul_data), function(i) {
   X_beta_reg <- as.matrix(betareg_fit,pars="X")
   X_beta_reg2 <- as.matrix(betareg_fit2,pars="X")
   
+  # calculate rmse
+  
+  rmse_ord <- mean(apply(as.matrix(fit_model,"regen_all"),2,function(c) { (c - c(final_out_degen,final_out_prop))^2 }))
+  rmse_zoib <- mean(apply(as.matrix(zoib_fit,"zoib_regen"),2,function(c) { (c - final_out)^2 }))
+  rmse_betareg <- mean(apply(yrep_betareg,2,function(c) { (c - final_out)^2 }))
+  rmse_betareg2 <- mean(apply(yrep_betareg2,2,function(c) { (c - final_out[final_out>0 & final_out<1])^2 }))
+  
+  # calculate loo
+  
+  loo_ordbeta <- loo(fit_model,"ord_log")
+  loo_betareg <- loo(betareg_fit)
+  loo_betareg2 <- loo(betareg_fit2)
+  loo_zoib <- loo(zoib_fit,"zoib_log")
+  
+  comp_loo <- loo_compare(loo_ordbeta,loo_zoib)
+  
+  win_loo <- row.names(comp_loo)[1]=="model1"
+  
   bind_cols(purrr::map_dfr(seq_len(4), ~this_data),bind_rows(tibble(model="Ordinal Beta Regression",
                    med_est=median(X_beta_ord),
                    high=quantile(X_beta_ord,.95),
                    low=quantile(X_beta_ord,.05),
-                   sd=sd(X_beta_ord)),
+                   sd=sd(X_beta_ord),
+                   loo_val=loo_ordbeta$estimates[1,1],
+                   win_loo=win_loo,
+                   win_loo_se=comp_loo[2,2],
+                   rmse=rmse_ord),
             tibble(model="ZOIB",
                    med_est=median(X_beta_zoib),
                    high=quantile(X_beta_zoib,.95),
                    low=quantile(X_beta_zoib,.05),
-                   sd=sd(X_beta_zoib)),
+                   sd=sd(X_beta_zoib),
+                   loo_val=loo_zoib$estimates[1,1],
+                   win_loo=win_loo,
+                   win_loo_se=comp_loo[2,2],
+                   rmse=rmse_zoib),
             tibble(model="Beta Regression - Transformed",
                    med_est=median(X_beta_reg),
                    high=quantile(X_beta_reg,.95),
                    low=quantile(X_beta_reg,.05),
-                   sd=sd(X_beta_reg)),
+                   sd=sd(X_beta_reg),
+                   loo_val=loo_betareg$estimates[1,1],
+                   win_loo=NA,
+                   comp_loo=NA,
+                   rmse=rmse_betareg),
             tibble(model="Beta Regression - (0,1)",
                    med_est=median(X_beta_reg2),
                    high=quantile(X_beta_reg2,.95),
                    low=quantile(X_beta_reg2,.05),
-                   sd=sd(X_beta_reg2))))
+                   sd=sd(X_beta_reg2),
+                   loo_val=loo_betareg2$estimates[1,1],
+                   win_loo=NA,
+                   comp_loo=NA,
+                   rmse=rmse_betareg2)))
   
   
   
-})
+},mc.cores=6)
 
 # look at real values
 

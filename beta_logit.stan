@@ -16,6 +16,7 @@ data {
   int N_pred_prop; // number of posterior predictive samples for (0,1)
   int indices_degen[N_pred_degen]; // random row indices to use for posterior predictive calculation of 0/1
   int indices_prop[N_pred_prop]; // random row indices to use for posterior predictive calculation of (0,1)
+  int run_gen; // whether to use generated quantities
 }
 parameters {
   real alpha1; // intercept for ordered model
@@ -67,11 +68,12 @@ model {
 
 generated quantities {
   
-  vector[N_pred_degen+N_pred_prop] regen_degen; // which model is selected (degenerate or proportional)
-  vector[N_pred_degen+N_pred_prop] regen_all; // final (combined) outcome -- defined as random subset of rows
-  vector[N_pred_degen+N_pred_prop] ord_log; // store log calculation for loo
+  vector[run_gen==0 ? 0 : N_pred_degen+N_pred_prop] regen_degen; // which model is selected (degenerate or proportional)
+  vector[run_gen==0 ? 0 : N_pred_degen+N_pred_prop] regen_all; // final (combined) outcome -- defined as random subset of rows
+  vector[run_gen==0 ? 0 : N_pred_degen+N_pred_prop] ord_log; // store log calculation for loo
   
-  if(N_pred_degen>0) {
+  if(run_gen==1) {
+    if(N_pred_degen>0) {
      // first do degenerate outcomes 
     // note: these could be *re-generated* as beta/propotions
     for(i in 1:num_elements(indices_degen)) {
@@ -122,8 +124,8 @@ generated quantities {
         
       } 
       }
+    }
   }
-  
   
 }
 

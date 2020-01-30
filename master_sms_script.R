@@ -6,15 +6,16 @@ require(RSQLite)
 require(readr)
 require(stringr)
 
-survey <- read_csv('data/Expropriation+Survey_August+12,+2019_08.33.csv')
+survey <- read_csv('data/Expropriation+Survey_August+21,+2019_08.25.csv')
 
 source('prepare_sms_data.R')
 source('send_credits_cysend.R')
 
-# import existing billing data to make sure we haven't sent one to anyone here yet
+  # import existing billing data to make sure we haven't sent one to anyone here yet
 
-billing_data <- read_csv('data/CY.SEND V6.9.3 Billing history.csv') %>% 
-  mutate(Number=str_extract(Description,'(?<=\\+213)[0-9]+'))
+billing_data <- read_csv('data/CY.SEND V6.9.5 Billing history.csv') %>% 
+  mutate(Number=str_extract(Description,'(?<=(\\+213|\\+20|\\+216|\\+380|\\+58))[0-9]+')) %>% 
+  filter(!is.na(Number))
 
 not_sent <- filter(to_sms,!(Number %in% billing_data$Number))
 
@@ -24,8 +25,16 @@ not_sent$Number <- ifelse(substr(not_sent$Number,1,1)=="0",
                           substr(not_sent$Number,2,nchar(not_sent$Number)),
                           not_sent$Number)
 
+# need to replace egypt 15 with 20
 
-file.remove('credit_status.txt')
+not_sent$small_int <- ifelse(not_sent$Country=="egypt" & not_sent$Network=="Vodafone",20,not_sent$small_int)
+
+if(!all(unique(not_sent$Network) %in% unique(these_prod$name))) {
+  stop(paste0("Not all networks match. In particular, ",unique(not_sent$Network)[!(unique(not_sent$Network) %in% unique(these_prod$name))]," doesn't match."))
+}
+
+
+try(file.remove('credit_status.txt'))
 over_sms <- lapply(not_sent$`Respondent ID`,function(i) {
   cat(paste0('Now on Respondent ID ',i),file = 'credit_status.txt',append = T)
   this_row <- filter(not_sent,`Respondent ID`==i)
