@@ -19,10 +19,8 @@ data {
   int run_gen; // whether to use generated quantities
 }
 parameters {
-  real alpha1; // intercept for ordered model
-  real alpha2; // intercept for beta regression
   vector[X] X_beta; // common predictor
-  ordered[2] cutpoints; // cutpoints on ordered (latent) variable
+  ordered[2] cutpoints; // cutpoints on ordered (latent) variable (also stand in as intercepts)
   real<lower=0> kappa; // scale parameter for beta regression
 }
 transformed parameters {
@@ -39,8 +37,6 @@ transformed parameters {
 model {
   
   // vague priors
-  alpha1 ~ normal(0,5);
-  alpha2 ~ normal(0,5);
   X_beta ~ normal(0,5);
   kappa ~ exponential(1);
   cutpoints[2] - cutpoints[1] ~ normal(0,3);
@@ -61,7 +57,7 @@ model {
     // Pr(Y in (0,1))
     target += log(inv_logit(calc_prop[n] - cutpoints[1]) - inv_logit(calc_prop[n] - cutpoints[2]));
     // Pr(Y==x where x in (0,1))
-    target += beta_proportion_lpdf(outcome_prop[n]|inv_logit(alpha2 + calc_prop[n]),kappa);
+    target += beta_proportion_lpdf(outcome_prop[n]|inv_logit(calc_prop[n]),kappa);
   }
   
 }
@@ -94,7 +90,7 @@ generated quantities {
         regen_all[i] = 1;
       } else {
         // did not occur in original data but could re-occur probabilistically
-        regen_all[i] = beta_proportion_rng(inv_logit(alpha2 + covar_degen[indices_degen[i],]*X_beta),kappa);
+        regen_all[i] = beta_proportion_rng(inv_logit(covar_degen[indices_degen[i],]*X_beta),kappa);
       }
       
   }
@@ -111,7 +107,7 @@ generated quantities {
         regen_degen[i+skip] = ordered_logistic_rng(covar_prop[indices_prop[i],]*X_beta,cutpoints);
         
         ord_log[i+skip] = log(inv_logit(calc_prop[indices_prop[i]] - cutpoints[1]) - inv_logit(calc_prop[indices_prop[i]] - cutpoints[2])) +
-                        beta_proportion_lpdf(outcome_prop[indices_prop[i]]|inv_logit(alpha2 + calc_prop[indices_prop[i]]),kappa);
+                        beta_proportion_lpdf(outcome_prop[indices_prop[i]]|inv_logit(calc_prop[indices_prop[i]]),kappa);
         
         if(regen_degen[i+skip]==1) {
           regen_all[i+skip] = 0;
@@ -119,7 +115,7 @@ generated quantities {
           regen_all[i+skip] = 1;
         } else {
           // did not occur in original data but could re-occur probabilistically
-          regen_all[i+skip] = beta_proportion_rng(inv_logit(alpha2 + covar_prop[indices_prop[i],]*X_beta),kappa);
+          regen_all[i+skip] = beta_proportion_rng(inv_logit(covar_prop[indices_prop[i],]*X_beta),kappa);
         }
         
       } 

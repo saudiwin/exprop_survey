@@ -26,7 +26,7 @@ plot(Y_trans3,X)
 
 # simulate some of these bad boys
 require(dplyr)
-all_out <- lapply(1:100, function(i) {
+all_out <- lapply(1:1000, function(i) {
   int <- runif(1,-.3,.3)
   cov1 <- runif(1,-.3,.3)
   cov2 <- runif(1,-.01,.01)
