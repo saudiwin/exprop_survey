@@ -183,7 +183,7 @@ simul_data <- tibble(N=round(runif(N_rep,100,2000),0),
                      cutpoints1=runif(N_rep,-5,-1)) %>% 
               mutate(cutpoints2=cutpoints1+runif(N_rep,0.5,5))
 
-all_simul_data <- parallel::mclapply(1:nrow(simul_data), function(i) {
+all_simul_data <- parallel::mclapply(1:10, function(i) {
   this_data <- slice(simul_data,i)
   cat(file = "simul_status.txt",paste0("Now on row ",i),append = T)
   
@@ -247,7 +247,7 @@ all_simul_data <- parallel::mclapply(1:nrow(simul_data), function(i) {
                 indices_prop=1:(sum(final_out>0 & final_out<1)),
                 run_gen=1)
   
-  fit_model <- sampling(beta_logit,data=to_bl,chains=1,cores=1,iter=1000)
+  fit_model <- sampling(beta_logit,data=to_bl,chains=1,cores=1,iter=1000,pars=c("regen_all","X_beta","ord_log"))
   
   
   x <- as.matrix(X)
@@ -333,26 +333,4 @@ all_simul_data <- parallel::mclapply(1:nrow(simul_data), function(i) {
   
 },mc.cores=8)
 
-# look at real values
-
-ppc_error_scatter_avg(y=c(final_out_degen,final_out_prop),
-                 yrep=yrep_ordbeta)
-
-ppc_error_scatter_avg(y=final_out,
-                      yrep=yrep_zoib)
-
-ppc_error_scatter_avg(y=final_out,
-                      yrep=yrep_betareg)
-
-# sample a couple rows
-
-# sample_n <- sample(1:N,size=5)
-# 
-# ppc_error_scatter(y=c(final_out_degen,final_out_prop)[sample_n],
-#                       yrep=yrep_ordbeta[sample(1:1000,100),sample_n])
-# 
-# ppc_error_scatter(y=final_out[sample_n],
-#                       yrep=yrep_zoib[sample(1:1000,100),sample_n])
-# 
-# ppc_error_scatter_avg(y=final_out[sample_n],
-#                       yrep=yrep_betareg[sample(1:1000,100),sample_n])
+simul_data_final <- bind_rows(all_simul_data)
