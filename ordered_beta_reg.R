@@ -15,41 +15,121 @@ X <- runif(N,-2,2)
 cutpoints <- c(-2,2) 
 
 X_beta <- 2.5
-eta <- X*X_beta
 
-# ancillary parameter of beta distribution
-kappa <- 2
 
-# predictor for ordered model
-mu1 <- eta
-# predictor for beta regression
-mu2 <- eta
+sample_ordbeta <- function(cutpoints=NULL,phi=NULL,X=NULL,X_beta=NULL) {
+  
+  # we'll assume the same eta was used to generate outcomes
+  eta <- X*X_beta
+  
+  # non-inflated outcome
+  out_beta <- rbeta(N,plogis(eta) * phi, (1 - plogis(eta)) * phi) 
+  
+  # probabilities for three possible categories (0, proportion, 1)
+  low <- 1-plogis(eta - cutpoints[1])
+  middle <- plogis(eta-cutpoints[1]) - plogis(eta-cutpoints[2])
+  high <- plogis(eta - cutpoints[2])
+  
+  # now determine which one we get for each observation
+  
+  outcomes <- sapply(1:N, function(i) {
+    sample(1:3,size=1,prob=c(low[i],middle[i],high[i]))
+  })
+  
+  # combine and sample from full distribution
+  
+  sapply(1:length(outcomes),function(i) {
+    if(outcomes[i]==1) {
+      return(0)
+    } else if(outcomes[i]==2) {
+      return(out_beta[i])
+    } else {
+      return(1)
+    }
+  })
+  
+}
 
-# probabilities for three possible categories (0, proportion, 1)
-low <- 1-plogis(mu2 - cutpoints[1])
-middle <- plogis(mu2-cutpoints[1]) - plogis(mu2-cutpoints[2])
-high <- plogis(mu2 - cutpoints[2])
-
-# we'll assume the same eta was used to generate outcomes
-
-out_beta <- rbeta(N,plogis(mu1) * kappa, (1 - plogis(mu1)) * kappa) 
-
-# now determine which one we get for each observation
-outcomes <- sapply(1:N, function(i) {
-  sample(1:3,size=1,prob=c(low[i],middle[i],high[i]))
-})
-
-# now combine binary (0/1) with proportion (beta)
-
-final_out <- sapply(1:length(outcomes),function(i) {
-  if(outcomes[i]==1) {
-    return(0)
-  } else if(outcomes[i]==2) {
-    return(out_beta[i])
+predict_ordbeta <- function(cutpoints=NULL,phi=NULL,X=NULL,X_beta=NULL,
+                         combined_out=T) {
+  
+  # we'll assume the same eta was used to generate outcomes
+  eta <- X*X_beta
+  
+  # probabilities for three possible categories (0, proportion, 1)
+  low <- 1-plogis(eta - cutpoints[1])
+  middle <- plogis(eta-cutpoints[1]) - plogis(eta-cutpoints[2])
+  high <- plogis(eta - cutpoints[2])
+  
+  # check for whether combined outcome or single outcome
+  
+  if(combined_out) {
+    low*0 + middle*plogis(eta) + high*1
   } else {
-    return(1)
+    list(pr_zero=low,
+         pr_proportion=middle,
+         proportion_value=out_beta,
+         pr_one=high)
   }
-})
+  
+}
+
+
+
+# use this function to sample data
+
+final_out <- sample_ordbeta(cutpoints=cutpoints,
+                             phi=phi,
+                             X=X,
+                             X_beta=X_beta)
+
+# we can also use it to calculate "true" marginal effect of X on Y using code from margins package
+# i.e., numerical differentiation
+# set value of `h` based on `eps` to deal with machine precision
+
+eps <- 1e-7
+setstep <- function(x) {
+  x + (max(abs(x), 1, na.rm = TRUE) * sqrt(eps)) - x
+}
+
+y0 <- predict_ordbeta(cutpoints=cutpoints,
+                      phi=phi,
+                      X=X - setstep(X),
+                      X_beta=X_beta)
+
+y1 <- predict_ordbeta(cutpoints=cutpoints,
+                      phi=phi,
+                      X=X + setstep(X),
+                      X_beta=X_beta)
+
+marg_eff <- (y1-y0)/((X + setstep(X))-(X - setstep(X)))
+
+mean(marg_eff)
+
+# check for pr0 and pr1
+
+y0 <- predict_ordbeta(cutpoints=cutpoints,
+                      phi=phi,
+                      X=X - setstep(X),
+                      X_beta=X_beta,combined_out = F)
+
+y1 <- predict_ordbeta(cutpoints=cutpoints,
+                      phi=phi,
+                      X=X + setstep(X),
+                      X_beta=X_beta,combined_out = F)
+
+marg_eff_0 <- (y1$pr_zero-y0$pr_zero)/((X + setstep(X))-(X - setstep(X)))
+
+marg_eff_1 <- (y1$pr_one-y0$pr_one)/((X + setstep(X))-(X - setstep(X)))
+
+mean(marg_eff_0)
+mean(marg_eff_1)
+
+# check what OLS does
+
+ols_fit <- lm(final_out~X)
+
+summary(ols_fit)
 
 # now we need a Stan file
 
