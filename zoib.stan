@@ -56,24 +56,24 @@ model {
   coef_p ~ normal(0, 1);
   alpha ~ normal(0,1);
   
-  // is_discrete ~ bernoulli(psi);
-  // for (i in 1:n) {
-  //   if (is_discrete[i] == 1) {
-  //     y_discrete[i] ~ bernoulli(gamma[i]);
-  //   } else {
-  //     y[i] ~ beta(p[i], q[i]);
-  //   }
-  // }
-  
+  is_discrete ~ bernoulli(psi);
   for (i in 1:n) {
-    if (y[i] == 0) {
-      target += log(psi[i]) + log1m(gamma[i]);
-    } else if (y[i] == 1) {
-      target += log(psi[i]) + log(gamma[i]);
+    if (is_discrete[i] == 1) {
+      y_discrete[i] ~ bernoulli(gamma[i]);
     } else {
-      target += log1m(psi[i]) + beta_lpdf(y[i] | p[i], q[i]);
+      y[i] ~ beta(p[i], q[i]);
     }
   }
+  
+  // for (i in 1:n) {
+  //   if (y[i] == 0) {
+  //     target += log(psi[i]) + log1m(gamma[i]);
+  //   } else if (y[i] == 1) {
+  //     target += log(psi[i]) + log(gamma[i]);
+  //   } else {
+  //     target += log1m(psi[i]) + beta_lpdf(y[i] | p[i], q[i]);
+  //   }
+  // }
 }
 generated quantities {
   vector[run_gen==1 ? n: 0] zoib_log;
@@ -102,10 +102,6 @@ generated quantities {
     }
     
   }
-  
-  
-  
-  //zoib_log += bernoulli_lpmf(is_discrete|psi);
   }
   
 }
