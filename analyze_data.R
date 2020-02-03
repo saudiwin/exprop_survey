@@ -9,7 +9,7 @@ require(readr)
 require(lubridate)
 
 # change path to reflect most recent data from Qualtrics
-qual_data <- read_csv("data/Expropriation+Survey_August+21,+2019_08.25.csv") %>% 
+qual_data <- read_csv("data/Expropriation+Survey_August+12,+2019_08.33.csv") %>% 
   slice(-c(1:2)) %>% 
   filter(consent_fixed=="Agree" | consent_random=="Agree") %>% 
   mutate(EndDate=ymd_hms(EndDate)) %>% 
@@ -206,8 +206,6 @@ combined <- mutate(combined,
 
 # current model only uses continuous treatments as discrete 
 # treatments need to be combined across languages
-all_treat_fit <- betareg(outcome_prop ~ connections,
-                         data = combined)
 
 all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long + Duration + clicks,
                          data = combined)
@@ -276,6 +274,8 @@ summary(all_treat_fit_lm)
 require(rstan)
 require(bayesplot)
 
+rstan_options()
+
 beta_logit_stan <- stan_model("beta_logit.stan")
 
 combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,country_resp=="Egypt",!(clicks==0 & outcome_norm==0.5))
@@ -287,8 +287,8 @@ treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + s
 
 to_sample <- nrow(treat_matrix_prop)
 
-indices_degen <- sample(1:nrow(treat_matrix_degen),size=to_sample/2)
-indices_prop <- sample(1:nrow(treat_matrix_prop),size=to_sample/2)
+# indices_degen <- sample(1:nrow(treat_matrix_degen),size=to_sample/2)
+# indices_prop <- sample(1:nrow(treat_matrix_prop),size=to_sample/2)
 
 to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
                      N_degen=nrow(treat_matrix_degen),
@@ -297,26 +297,117 @@ to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
                      outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
                      covar_degen=treat_matrix_degen[,-1],
                      covar_prop=treat_matrix_prop[,-1],
-                     N_pred_degen=to_sample/2,
-                     N_pred_prop=to_sample/2,
-                     indices_degen=indices_degen,
-                     indices_prop=indices_prop)
+                     N_pred_degen=nrow(treat_matrix_degen),
+                     N_pred_prop=nrow(treat_matrix_prop),
+                     indices_degen=1:nrow(treat_matrix_degen),
+                     indices_prop=1:nrow(treat_matrix_prop),
+                     run_gen=1)
 
 ord_beta_mydata <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
 
 stan_plot(ord_beta_mydata,"X_beta")
 
-yrep <- extract(ord_beta_mydata,"regen_all")[[1]]
+yrep <- as.matrix(ord_beta_mydata,pars="regen_all")
 
-ppc_dens_overlay(y=c(to_stan_data$outcome_degen[indices_degen],to_stan_data$outcome_prop[indices_prop]),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
-ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen[indices_degen],to_stan_data$outcome_prop[indices_prop]),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
 rbeta_mean <- function(N,mu,phi) {
   rbeta(N, mu * phi, (1 - mu) * phi)
 }
 
-kappa <- mean(extract(ord_beta_mydata,"kappa")[[1]])
+# get marginal effects
 
-hist(rbeta_mean(1000,0.5,3.5))
+eps <- 1e-7
+setstep <- function(x) {
+  x + (max(abs(x), 1, na.rm = TRUE) * sqrt(eps)) - x
+}
+
+# functions for doing marginal effects
+
+predict_ordbeta <- function(cutpoints=NULL,X=NULL,X_beta=NULL,
+                            combined_out=T) {
+  
+  # we'll assume the same eta was used to generate outcomes
+  eta <- X[,-1] %*% as.matrix(X_beta)
+  
+  # probabilities for three possible categories (0, proportion, 1)
+  low <- 1-plogis(eta - cutpoints[1])
+  middle <- plogis(eta-cutpoints[1]) - plogis(eta-cutpoints[2])
+  high <- plogis(eta - cutpoints[2])
+  
+  # check for whether combined outcome or single outcome
+  
+  if(combined_out) {
+    low*0 + middle*plogis(eta) + high*1
+  } else {
+    list(pr_zero=low,
+         pr_proportion=middle,
+         proportion_value=plogis(eta),
+         pr_one=high)
+  }
+  
+}
+
+cutpoints_est <- as.matrix(ord_beta_mydata,"cutpoints")
+X_beta_ord <- as.matrix(ord_beta_mydata,"X_beta")
+
+# iterate over columns to get marginal effects
+
+mat_data <- rbind(treat_matrix_degen,treat_matrix_prop)
+
+all_vars <- lapply(1:ncol(mat_data[,-1]),function(c) {
+  
+  if(all(mat_data[!is.na(mat_data[,c]),c] %in% c(0,1))) {
+    pred_data_high <- mat_data
+    
+    pred_data_high[,c] <- 0
+    
+    pred_data_low <- mat_data
+    
+    pred_data_low[,c] <- 1
+  } else {
+    pred_data_high <- mat_data
+    
+    pred_data_high[,c] <- pred_data_high[,c] + setstep(pred_data_high[,c])
+    
+    pred_data_low <- mat_data
+    
+    pred_data_low[,c] <- pred_data_low[,c] - setstep(pred_data_low[,c])
+  }
+  
+  
+  
+  margin_ord <- sapply(1:nrow(X_beta_ord), function(i,this_col) {
+    y0 <- predict_ordbeta(cutpoints=cutpoints_est[i,],
+                          X=pred_data_low,
+                          X_beta=X_beta_ord[i,])
+    
+    y1 <- predict_ordbeta(cutpoints=cutpoints_est[i,],
+                          X=pred_data_high,
+                          X_beta=X_beta_ord[i,])
+    
+    marg_eff <- (y1-y0)/(pred_data_high[,this_col]-pred_data_low[,this_col])
+    
+    mean(marg_eff)
+  },c)
+  
+  tibble(marg=margin_ord,variable=colnames(treat_matrix_prop)[c+1])
+}) %>% bind_rows
+
+# plot the marginal effects
+
+all_vars %>% 
+  group_by(variable) %>% 
+  mutate(marg=marg*100) %>% 
+  summarize(med_est=median(marg),
+            high=quantile(marg,.95),
+            low=quantile(marg,.05)) %>% 
+  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
+  geom_pointrange(aes(ymin=low,ymax=high)) +
+  theme_minimal() +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  coord_flip()
+
 
