@@ -9,7 +9,7 @@ require(readr)
 require(lubridate)
 
 # change path to reflect most recent data from Qualtrics
-qual_data <- read_csv("data/Expropriation+Survey_August+12,+2019_08.33.csv") %>% 
+qual_data <- read_csv("data/Expropriation+Survey_February+8,+2020_04.29.csv") %>% 
   slice(-c(1:2)) %>% 
   filter(consent_fixed=="Agree" | consent_random=="Agree") %>% 
   mutate(EndDate=ymd_hms(EndDate)) %>% 
@@ -208,7 +208,36 @@ combined <- mutate(combined,
 # treatments need to be combined across languages
 
 all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long + Duration + clicks,
-                         data = combined)
+                         data = filter(combined,!(clicks==0 & outcome_norm==0.5)))
+
+
+summary(all_treat_fit_lm)
+
+
+require(rstanarm)
+
+all_treat_fit_stanlm <- rstanarm::stan_lm(outcome ~ connections + employees + years + short_long + Duration + clicks +
+                                            I(Duration^2) + I(clicks^2),
+                       data = filter(combined,!(clicks==0 & outcome_norm==0.5)),
+                       prior=NULL)
+
+yrep_lm <- posterior_predict(all_treat_fit_stanlm)
+
+ppc_dens_overlay(all_treat_fit_stanlm$model$outcome,yrep_lm)
+
+rmse_lm <- apply(yrep_lm,1,function(c) sqrt(mean((c-all_treat_fit_stanlm$model$outcome)^2)))
+
+summary(all_treat_fit_lm)
+
+# look at just conn vs. non-conn.
+
+all_treat_fit_lm <- lm(outcome ~ connected*country_resp,
+                       data = mutate(combined,connected=as.numeric(!grepl(x=connections,pattern="control"))))
+
+summary(all_treat_fit_lm)
+
+all_treat_fit_lm <- lm(outcome ~ connected*clicks,
+                       data = mutate(combined,connected=as.numeric(!grepl(x=connections,pattern="control"))))
 
 summary(all_treat_fit_lm)
 
@@ -274,16 +303,23 @@ summary(all_treat_fit_lm)
 require(rstan)
 require(bayesplot)
 
-rstan_options()
+rstan_options(auto_write=T)
 
 beta_logit_stan <- stan_model("beta_logit.stan")
 
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,country_resp=="Egypt",!(clicks==0 & outcome_norm==0.5))
-combine_degen <- filter(combined,outcome==0|outcome==100,country_resp=="Egypt") %>% 
+# scale variables 
+
+combined <- mutate(combined,
+                   clicks=scale(clicks),
+                   employees=scale(employees),
+                   years=scale(years))
+
+combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,!(clicks==0 & outcome_norm==0.5))
+combine_degen <- filter(combined,outcome==0|outcome==100) %>% 
   mutate(outcome=ifelse(outcome>0,1,outcome))
 
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + clicks,data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + clicks,data=combine_degen)
+treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_prop)
+treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_degen)
 
 to_sample <- nrow(treat_matrix_prop)
 
@@ -309,6 +345,11 @@ stan_plot(ord_beta_mydata,"X_beta")
 
 yrep <- as.matrix(ord_beta_mydata,pars="regen_all")
 
+# rmse
+
+rmse_ord <- apply(yrep,1,function(c) sqrt(mean((c-c(to_stan_data$outcome_degen,to_stan_data$outcome_prop))^2)))
+sd_ord <- apply(yrep,1,sd)
+kurt_ord <- apply(yrep,1,moments::kurtosis)
 ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
 ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
@@ -330,7 +371,7 @@ predict_ordbeta <- function(cutpoints=NULL,X=NULL,X_beta=NULL,
                             combined_out=T) {
   
   # we'll assume the same eta was used to generate outcomes
-  eta <- X[,-1] %*% as.matrix(X_beta)
+  eta <- X %*% as.matrix(X_beta)
   
   # probabilities for three possible categories (0, proportion, 1)
   low <- 1-plogis(eta - cutpoints[1])
@@ -355,9 +396,9 @@ X_beta_ord <- as.matrix(ord_beta_mydata,"X_beta")
 
 # iterate over columns to get marginal effects
 
-mat_data <- rbind(treat_matrix_degen,treat_matrix_prop)
+mat_data <- rbind(treat_matrix_degen,treat_matrix_prop)[,-1]
 
-all_vars <- lapply(1:ncol(mat_data[,-1]),function(c) {
+all_vars <- lapply(1:ncol(mat_data),function(c) {
   
   if(all(mat_data[!is.na(mat_data[,c]),c] %in% c(0,1))) {
     pred_data_high <- mat_data
@@ -393,7 +434,7 @@ all_vars <- lapply(1:ncol(mat_data[,-1]),function(c) {
     mean(marg_eff)
   },c)
   
-  tibble(marg=margin_ord,variable=colnames(treat_matrix_prop)[c+1])
+  tibble(marg=margin_ord,variable=colnames(mat_data)[c])
 }) %>% bind_rows
 
 # plot the marginal effects
@@ -407,7 +448,170 @@ all_vars %>%
   ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
   geom_pointrange(aes(ymin=low,ymax=high)) +
   theme_minimal() +
+  geom_hline(yintercept = 0,linetype=2) +
   scale_y_continuous(labels=scales::dollar_format()) +
   coord_flip()
 
+all_vars %>% 
+  group_by(variable) %>% 
+  mutate(marg=marg*100) %>% 
+  summarize(med_est=median(marg),
+            high=quantile(marg,.95),
+            low=quantile(marg,.05)) %>% 
+  filter(variable %in% c("years")) %>% 
+  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
+  geom_pointrange(aes(ymin=low,ymax=high)) +
+  geom_hline(yintercept = 0) +
+  theme_minimal() +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  coord_flip()
+
+# just do connected vs. unconnected
+
+
+# Phi regression -----------------------------------------------
+
+beta_logit_phireg <- stan_model("beta_logit_phireg.stan")
+
+# need to make a sum_clicks variable
+
+combined <- group_by(combined,ResponseId) %>% 
+  mutate(sum_clicks=sum(clicks))
+
+combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,
+                       !(is.na(connections)|is.na(employees)|is.na(years)|is.na(short_long)|is.na(clicks)|is.na(Duration)))
+combine_degen <- filter(combined,outcome==0|outcome==100) %>% 
+  mutate(outcome=ifelse(outcome>0,1,outcome)) %>% 
+  filter(!(is.na(connections)|is.na(employees)|is.na(years)|is.na(short_long)|is.na(clicks)|is.na(Duration)))
+
+treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_prop)
+treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_degen)
+treat_matrix_phi <- model.matrix(outcome ~  poly(clicks,3) + poly(Duration,3) + position,data=combine_prop)
+treat_matrix_phi_degen <- model.matrix(outcome ~ poly(clicks,3) + poly(Duration,3) + position,data=combine_degen)
+to_sample <- nrow(treat_matrix_prop)
+
+to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
+                     N_degen=nrow(treat_matrix_degen),
+                     X=ncol(treat_matrix_prop)-1,
+                     X_phi=ncol(treat_matrix_phi)-1,
+                     outcome_prop=combine_prop$outcome_norm[as.numeric(row.names(treat_matrix_prop))],
+                     outcome_degen=combine_degen$outcome[as.numeric(row.names(treat_matrix_degen))],
+                     covar_degen=treat_matrix_degen[,-1],
+                     covar_prop=treat_matrix_prop[,-1],
+                     covar_prop_phi=treat_matrix_phi[,-1],
+                     covar_degen_phi=treat_matrix_phi_degen[,-1],
+                     N_pred_degen=nrow(treat_matrix_degen),
+                     N_pred_prop=nrow(treat_matrix_prop),
+                     indices_degen=1:nrow(treat_matrix_degen),
+                     indices_prop=1:nrow(treat_matrix_prop),
+                     run_gen=1)
+
+ord_beta_con <- sampling(beta_logit_phireg,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
+
+stan_plot(ord_beta_con,"X_beta")
+stan_plot(ord_beta_con,c("alpha_phi","X_beta_phi"))
+
+yrep <- as.matrix(ord_beta_con,pars="regen_all")
+
+# rmse
+
+rmse_ord <- apply(yrep,1,function(c) sqrt(mean((c-c(to_stan_data$outcome_degen,to_stan_data$outcome_prop))^2)))
+kurt_ord <- apply(yrep,1,moments::kurtosis)
+ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+
+# compare to OLS rmse
+
+tibble(rmse_ord=rmse_ord[1:1000]*100,rmse_lm=rmse_lm[1:1000]) %>% 
+  gather(key="type",value="rmse") %>% 
+  ggplot(aes(x=rmse)) +
+  geom_density(aes(fill=type),alpha=0.5) +
+  geom_vline(aes(xintercept=mean(rmse),linetype=type)) +
+  theme_minimal()
+
+cutpoints_est <- as.matrix(ord_beta_con,"cutpoints")
+X_beta_ord <- as.matrix(ord_beta_con,"X_beta")
+
+# make a plot with cutpoints overlain on empirical density
+
+tibble(outcome=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),
+       cut1=mean(plogis(cutpoints_est[,1])),
+       cut2=mean(plogis(cutpoints_est[,2]))) %>% 
+  ggplot(aes(x=outcome)) +
+  geom_histogram() +
+  theme_minimal() +
+  geom_vline(aes(xintercept=unique(cut1))) +
+  geom_vline(aes(xintercept=unique(cut2)))
+
+# iterate over columns to get marginal effects
+
+mat_data <- rbind(treat_matrix_degen,treat_matrix_prop)[,-1]
+
+all_vars <- lapply(1:ncol(mat_data),function(c) {
+  
+  if(all(mat_data[!is.na(mat_data[,c]),c] %in% c(0,1))) {
+    pred_data_high <- mat_data
+    
+    pred_data_high[,c] <- 0
+    
+    pred_data_low <- mat_data
+    
+    pred_data_low[,c] <- 1
+  } else {
+    pred_data_high <- mat_data
+    
+    pred_data_high[,c] <- pred_data_high[,c] + setstep(pred_data_high[,c])
+    
+    pred_data_low <- mat_data
+    
+    pred_data_low[,c] <- pred_data_low[,c] - setstep(pred_data_low[,c])
+  }
+  
+  
+  
+  margin_ord <- sapply(1:nrow(X_beta_ord), function(i,this_col) {
+    y0 <- predict_ordbeta(cutpoints=cutpoints_est[i,],
+                          X=pred_data_low,
+                          X_beta=X_beta_ord[i,])
+    
+    y1 <- predict_ordbeta(cutpoints=cutpoints_est[i,],
+                          X=pred_data_high,
+                          X_beta=X_beta_ord[i,])
+    
+    marg_eff <- (y1-y0)/(pred_data_high[,this_col]-pred_data_low[,this_col])
+    
+    mean(marg_eff)
+  },c)
+  
+  tibble(marg=margin_ord,variable=colnames(mat_data)[c])
+}) %>% bind_rows
+
+# plot the marginal effects
+
+all_vars %>% 
+  group_by(variable) %>% 
+  mutate(marg=marg*100) %>% 
+  summarize(med_est=median(marg),
+            high=quantile(marg,.95),
+            low=quantile(marg,.05)) %>% 
+  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
+  geom_pointrange(aes(ymin=low,ymax=high)) +
+  theme_minimal() +
+  geom_hline(yintercept = 0,linetype=2) +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  coord_flip()
+
+all_vars %>% 
+  group_by(variable) %>% 
+  mutate(marg=marg*100) %>% 
+  summarize(med_est=median(marg),
+            high=quantile(marg,.95),
+            low=quantile(marg,.05)) %>% 
+  filter(variable %in% c("employees")) %>% 
+  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
+  geom_pointrange(aes(ymin=low,ymax=high)) +
+  geom_hline(yintercept = 0) +
+  theme_minimal() +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  coord_flip()
 
