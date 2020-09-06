@@ -7,13 +7,16 @@ require(ggplot2)
 require(betareg)
 require(readr)
 require(lubridate)
+require(brms)
+require(rstanarm)
+require(forcats)
 
 # change path to reflect most recent data from Qualtrics
 qual_data <- read_csv("data/Expropriation+Survey_February+8,+2020_04.29.csv") %>% 
   slice(-c(1:2)) %>% 
   filter(consent_fixed=="Agree" | consent_random=="Agree") %>% 
   mutate(EndDate=ymd_hms(EndDate)) %>% 
-  filter(EndDate>ymd_hms("2020-01-22 12:00:00")) %>% 
+  #filter(EndDate>ymd_hms("2020-01-22 12:00:00")) %>% 
   mutate(outcome1=coalesce(experiment1_desk_1,exp1_short_1),
          outcome2=coalesce(experiment2_desk_1,exp2_short_1),
          outcome3=coalesce(experiment3_desk_1,exp3_short_1),
@@ -22,6 +25,49 @@ qual_data <- read_csv("data/Expropriation+Survey_February+8,+2020_04.29.csv") %>
                               !is.na(exp1_short_1)~"Short",
                               TRUE~NA_character_),
          Duration=scale(as.numeric(`Duration (in seconds)`)))
+
+
+# we have double the number of responses that we "should" have given the number of FB completions
+# suggests duplicate responses
+# remove by checking cell phone #s and IP addresses
+
+qual_data <- group_by(qual_data,IPAddress) %>% 
+  arrange(EndDate) %>% 
+  slice(1)
+
+# remove ones with missing ad IDs (sign of shared link)
+
+qual_data <- filter(qual_data,!is.na(adid))
+
+# remove any where it took less than 5 minutes to finish the survey (should take longer than that)
+
+qual_data <-  mutate(qual_data,`Duration (in seconds)`=as.numeric(`Duration (in seconds)`)) %>% 
+                       filter(`Duration (in seconds)`>300)
+
+# check for cell phone dupes
+
+jotform1 <- read_csv("data/Venezuela-Egypt-Ukraine-Mobile-Credit (1).csv") %>% 
+  mutate(cell_num=coalesce(`Введите ваш номер телефона (без впереди идущих нолей):`,
+                           `Introduzca su número de teléfono (sin código de país):`))
+jotform2 <- read_csv("data/Clone-of-Clone-of-Venezuela-Egypt-Ukraine-Mobile-Credit.csv")
+names(jotform2)[6] <- "arab_num"
+jotform2 <- jotform2 %>% 
+  mutate(cell_num=coalesce(`Введите ваш номер телефона (без впереди идущих нолей):`,
+           `Introduzca su número de teléfono (sin código de país):`,
+           arab_num))
+
+all_jot <- bind_rows(jotform1,jotform2) %>% select(RandomNum=`Respondent ID`,cell_num,
+                                                   resp_date=`Submission Date`) %>% 
+  mutate(resp_date=ymd_hms(resp_date)) %>% 
+  group_by(cell_num) %>% 
+  mutate(n_resp=length(unique(RandomNum))) %>% 
+  arrange(resp_date) %>% 
+  slice(-1)
+  
+# get rid of these dupes
+
+qual_data <- anti_join(qual_data,all_jot,by="RandomNum") %>% 
+  ungroup
 
 # let's test for difference between exp 1 and exp 2
 
@@ -126,8 +172,7 @@ combined <- spread(combined,key = "treatment",value="value")
 
 # replace missing click values with mean of respondent
 
-combined <- mutate(combined, clicks=as.numeric(clicks)) %>% 
-  mutate(clicks=ifelse(is.na(clicks),median(clicks,na.rm=T),clicks))
+combined <- mutate(combined, clicks=as.numeric(clicks))
 
 combined <- mutate(combined,
                    connections=recode(connections,
@@ -182,7 +227,15 @@ combined <- mutate(combined,
                             `Owner is member of the President's political party`="own_pres_party",
                             `President's daughter is on the board of the company`="board_daughter_pres",
                             `Owner is former general in the military`="own_gen_army",
-                            `President's son is on the board of the company`="board_son_pres"),
+                            `President's son is on the board of the company`="board_son_pres",
+                            `Owner is former member of parliament`="own_mp",
+                            `Owner is a nephew of the prime minister`="own_pm_nephew",
+                            `Owner is former officer in the police`="own_police",
+                            `Owner is former classmate of the President`="own_pres_classmate",
+                            `Owner is married to the President's son`="own_pres_daughter_inlaw",
+                            `Head of ministry is on board of company`="board_minister",
+                            `Member of parliament is on board of company`="board_mp",
+                            `Owner is married to the President's daughter`="own_pres_son_inlaw"),
          connections=forcats::fct_relevel(factor(connections),"control"),
          perf=recode(perf,`Покрывает расходы`="break_even",
                      `Теряет немного денег`="lose_some",
@@ -201,125 +254,77 @@ combined <- mutate(combined,
                      `مربح للغاية`="gain_much",
                      `Losing A Lot of Money`="lose_much",
                      `Break Even`="break_even",
-                     `Somewhat Profitable`="lose_some")) %>% 
-  mutate_at(c("employees","years"),as.numeric)
+                     `Somewhat Profitable`="lose_some",
+                     `Losing Some Money`="lose_some",
+                     `Very Profitable`="gain_much"),
+         country=fct_collapse(country,Germany=c("Alemania","Germany","Германия"),
+                              Egypt=c("Egypt","مصر"),
+                              Ukraine=c("Украина","Ukraine"),
+                              Saudi=c("Arabia Saudita","Saudi Arabia","Саудовская Аравия"),
+                              Brazil=c("Brasil","Brazil","Бразилия"),
+                              China=c("China","Китай"),
+                              Korea=c("Corea del Sur","Южная Корея"),
+                              USA=c("United States","Estados Unidos","США"),
+                              Japan=c("Japan","Япония"),
+                              Russia=c("Rusia","Россия"),
+                              Venezuela="Venezuela")) %>% 
+  mutate_at(c("employees","years"),as.numeric) %>% 
+  mutate(employees=scale(employees),
+         years=scale(years),
+         clicks=scale(clicks))
 
-# current model only uses continuous treatments as discrete 
-# treatments need to be combined across languages
-
-all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long + Duration + clicks,
-                         data = filter(combined,!(clicks==0 & outcome_norm==0.5)))
+# need to figure out what to do with profit/revenue/etc
 
 
-summary(all_treat_fit_lm)
 
+# remove 50s, 51s and 63s (possible missing values)
+
+combined_clean <- group_by(combined,ResponseId) %>% 
+  mutate(all50=(!(all(outcome==50) || all(outcome==63) || all(outcome==51) || all(outcome==52) || all(outcome==37)))) %>% 
+  filter(all50,!is.na(outcome))
+
+# only ones where we measured clicks
+
+combined_clean_clicks <- filter(combined_clean,!is.na(clicks))
 
 require(rstanarm)
 
-all_treat_fit_stanlm <- rstanarm::stan_lm(outcome ~ connections + employees + years + short_long + Duration + clicks +
-                                            I(Duration^2) + I(clicks^2),
-                       data = filter(combined,!(clicks==0 & outcome_norm==0.5)),
+all_treat_fit_stanlm <- rstanarm::stan_lm(outcome_norm ~ connections + employees + years,
+                       data = combined_clean,
                        prior=NULL)
 
 yrep_lm <- posterior_predict(all_treat_fit_stanlm)
 
-ppc_dens_overlay(all_treat_fit_stanlm$model$outcome,yrep_lm)
+#ppc_dens_overlay(all_treat_fit_stanlm$model$outcome,yrep_lm)
 
 rmse_lm <- apply(yrep_lm,1,function(c) sqrt(mean((c-all_treat_fit_stanlm$model$outcome)^2)))
 
-summary(all_treat_fit_lm)
+all_treat_fit_stanlm
 
-# look at just conn vs. non-conn.
+all_treat_fit_stanlm_clicks <- rstanarm::stan_lm(outcome_norm ~ connections + employees + years,
+                                          data = combined_clean_clicks,
+                                          prior=NULL)
 
-all_treat_fit_lm <- lm(outcome ~ connected*country_resp,
-                       data = mutate(combined,connected=as.numeric(!grepl(x=connections,pattern="control"))))
+yrep_lm_clicks <- posterior_predict(all_treat_fit_stanlm_clicks)
 
-summary(all_treat_fit_lm)
+#ppc_dens_overlay(all_treat_fit_stanlm$model$outcome,yrep_lm)
 
-all_treat_fit_lm <- lm(outcome ~ connected*clicks,
-                       data = mutate(combined,connected=as.numeric(!grepl(x=connections,pattern="control"))))
+rmse_lm_clicks <- apply(yrep_lm_clicks,1,function(c) sqrt(mean((c-all_treat_fit_stanlm_clicks$model$outcome_norm)^2)))
 
-summary(all_treat_fit_lm)
+all_treat_fit_stanlm_clicks
 
-# break apart by country
+stan_plot(all_treat_fit_stanlm_clicks,pars=c("(Intercept)","log-posterior","R2","mean_PPD","sigma","log-fit_ratio"),include=F)
 
-output <- lapply(unique(combined$country_resp), function(c) {
-  print(c)
-  print(summary(lm(outcome ~ connections + employees + years + short_long,
-     data = filter(combined,country_resp==c))))
-})
-
-# just short
-
-all_treat_short <- lm(outcome ~ connections + employees + years + perf,
-                       data = filter(combined,short_long=="Short"))
-
-summary(all_treat_short)
-
-output <- lapply(unique(combined$country_resp), function(c) {
-  print(c)
-  print(summary(lm(outcome ~ connections + employees + years,
-                   data = filter(combined,country_resp==c,short_long=="Short"))))
-})
-
-# just long
-
-all_treat_long <- lm(outcome ~ connections + employees + years,
-                      data = filter(combined,short_long=="Long"))
-
-summary(all_treat_long)
-
-output <- lapply(unique(combined$country_resp), function(c) {
-  print(c)
-  print(summary(lm(outcome ~ connections + employees + years,
-                   data = filter(combined,country_resp==c,short_long=="Long"))))
-})
-
-# check gender effects
-
-combined$connections_gender <- if_else(combined$connections %in% c("board_daughter_pres","own_pm_niece","own_pres_daughter_inlaw"),
-                                       "Female",if_else(combined$connections %in% c("board_son_pres","own_pm_nephew","own_pres_son_inlaw"),
-                                                        "Male","Neutral"))
-gender_lm <- lm(outcome ~ connections_gender + employees + years +  short_long,
-                       data = combined)
-summary(gender_lm)
-
-output <- lapply(unique(combined$country_resp), function(c) {
-  print(c)
-  print(summary(lm(outcome ~ connections_gender + employees + years,
-                   data = filter(combined,country_resp==c))))
-})
-
-# look at just managers
-
-all_treat_fit_lm <- lm(outcome ~ connections + employees + years + short_long,
-                       data = filter(combined,position=="Manager"))
-
-summary(all_treat_fit_lm)
-
-
-# implement a Stan model
-
-require(rstan)
-require(bayesplot)
-
-rstan_options(auto_write=T)
-
-beta_logit_stan <- stan_model("beta_logit.stan")
+# ordered beta regression
 
 # scale variables 
 
-combined <- mutate(combined,
-                   clicks=scale(clicks),
-                   employees=scale(employees),
-                   years=scale(years))
-
-combine_prop <- filter(combined,outcome_norm>0,outcome_norm<1,!(clicks==0 & outcome_norm==0.5))
-combine_degen <- filter(combined,outcome==0|outcome==100) %>% 
+combine_prop <- filter(combined_clean,outcome_norm>0,outcome_norm<1)
+combine_degen <- filter(combined_clean,outcome==0|outcome==100) %>% 
   mutate(outcome=ifelse(outcome>0,1,outcome))
 
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_degen)
+treat_matrix_prop <- model.matrix(outcome ~ connected*employees,data=combine_prop)
+treat_matrix_degen <- model.matrix(outcome ~ connected*employees,data=combine_degen)
 
 to_sample <- nrow(treat_matrix_prop)
 
@@ -341,18 +346,17 @@ to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
 
 ord_beta_mydata <- sampling(beta_logit_stan,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
 
-stan_plot(ord_beta_mydata,"X_beta")
-
 yrep <- as.matrix(ord_beta_mydata,pars="regen_all")
+loo_ord <- loo(ord_beta_mydata,"ord_log")
 
 # rmse
 
 rmse_ord <- apply(yrep,1,function(c) sqrt(mean((c-c(to_stan_data$outcome_degen,to_stan_data$outcome_prop))^2)))
 sd_ord <- apply(yrep,1,sd)
 kurt_ord <- apply(yrep,1,moments::kurtosis)
-ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+#ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
-ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+#ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
 rbeta_mean <- function(N,mu,phi) {
   rbeta(N, mu * phi, (1 - mu) * phi)
@@ -452,19 +456,40 @@ all_vars %>%
   scale_y_continuous(labels=scales::dollar_format()) +
   coord_flip()
 
-all_vars %>% 
-  group_by(variable) %>% 
-  mutate(marg=marg*100) %>% 
-  summarize(med_est=median(marg),
-            high=quantile(marg,.95),
-            low=quantile(marg,.05)) %>% 
-  filter(variable %in% c("years")) %>% 
-  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
-  geom_pointrange(aes(ymin=low,ymax=high)) +
-  geom_hline(yintercept = 0) +
-  theme_minimal() +
-  scale_y_continuous(labels=scales::dollar_format()) +
-  coord_flip()
+# evaluate effect of connected treatment conditional on number of employees
+
+con_x_employ <- as.matrix(ord_beta_mydata,"X_beta[3]")
+employ <- as.matrix(ord_beta_mydata,"X_beta[2]")
+con_beta <- as.matrix(ord_beta_mydata,"X_beta[1]")
+alpha <- as.matrix(ord_beta_mydata,"alpha")
+
+# evaluate over employees
+
+over_employ_cont <- sapply(seq(min(combined$employees,na.rm=T),max(combined$employees,na.rm=T),length.out=100), function(em) {
+  plogis(employ*em)
+}) %>% 
+  as_tibble %>% 
+  mutate(iter=1:n(),type="Control") %>% 
+  gather(employ_num,estimate,-iter,-type)
+
+over_employ_treat <- sapply(seq(min(combined$employees,na.rm=T),max(combined$employees,na.rm=T),length.out=100), function(em) {
+  plogis(con_x_employ*em + con_beta + employ*em)
+}) %>% 
+  as_tibble %>% 
+  mutate(iter=1:n(),type="Treatment") %>% 
+  gather(employ_num,estimate,-iter,-type)
+
+bind_rows(over_employ_cont,
+          over_employ_treat)  %>% 
+  group_by(type,employ_num) %>% 
+  summarize(med_est=median(estimate),
+            high_est=quantile(estimate,.95),
+            low_est=quantile(estimate,.05)) %>% 
+  mutate(employ_num=as.numeric(stringr::str_extract(employ_num,"[0-9]+"))) %>% 
+  ggplot(aes(y=med_est,x=employ_num)) +
+  geom_ribbon(aes(ymin=low_est,
+                  ymax=high_est,fill=type),alpha=0.5) +
+  geom_line(linetype=2,aes(color=type))
 
 # just do connected vs. unconnected
 
@@ -484,10 +509,10 @@ combine_degen <- filter(combined,outcome==0|outcome==100) %>%
   mutate(outcome=ifelse(outcome>0,1,outcome)) %>% 
   filter(!(is.na(connections)|is.na(employees)|is.na(years)|is.na(short_long)|is.na(clicks)|is.na(Duration)))
 
-treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_prop)
-treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long + poly(clicks,2) + poly(Duration,2),data=combine_degen)
-treat_matrix_phi <- model.matrix(outcome ~  poly(clicks,3) + poly(Duration,3) + position,data=combine_prop)
-treat_matrix_phi_degen <- model.matrix(outcome ~ poly(clicks,3) + poly(Duration,3) + position,data=combine_degen)
+treat_matrix_prop <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_prop)
+treat_matrix_degen <- model.matrix(outcome ~ connections + employees + years + short_long,data=combine_degen)
+treat_matrix_phi <- model.matrix(outcome ~  poly(clicks,2) + poly(Duration,2) + position,data=combine_prop)
+treat_matrix_phi_degen <- model.matrix(outcome ~ poly(clicks,2) + poly(Duration,2) + position,data=combine_degen)
 to_sample <- nrow(treat_matrix_prop)
 
 to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
@@ -508,21 +533,22 @@ to_stan_data <- list(N_prop=nrow(treat_matrix_prop),
 
 ord_beta_con <- sampling(beta_logit_phireg,data=to_stan_data,cores=2,chains=2,iter=1000,init=0)
 
-stan_plot(ord_beta_con,"X_beta")
-stan_plot(ord_beta_con,c("alpha_phi","X_beta_phi"))
+#stan_plot(ord_beta_con,"X_beta")
+#stan_plot(ord_beta_con,c("alpha_phi","X_beta_phi"))
 
-yrep <- as.matrix(ord_beta_con,pars="regen_all")
+yrep_con <- as.matrix(ord_beta_con,pars="regen_all")
 
 # rmse
 
-rmse_ord <- apply(yrep,1,function(c) sqrt(mean((c-c(to_stan_data$outcome_degen,to_stan_data$outcome_prop))^2)))
-kurt_ord <- apply(yrep,1,moments::kurtosis)
-ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
-ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+rmse_ord_phi <- apply(yrep_con,1,function(c) sqrt(mean((c-c(to_stan_data$outcome_degen,to_stan_data$outcome_prop))^2)))
+kurt_ord_phi <- apply(yrep_con,1,moments::kurtosis)
+#ppc_dens_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
+#ppc_ecdf_overlay(y=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),yrep=yrep) + ggtitle("Posterior Predictive Distribution for Ordinal Beta Regression",subtitle="N=1000")
 
 # compare to OLS rmse
 
-tibble(rmse_ord=rmse_ord[1:1000]*100,rmse_lm=rmse_lm[1:1000]) %>% 
+tibble(rmse_ord_phi=rmse_ord_phi[1:1000]*100,rmse_lm=rmse_lm[1:1000],
+       rmse_ord=rmse_ord[1:1000]*100) %>% 
   gather(key="type",value="rmse") %>% 
   ggplot(aes(x=rmse)) +
   geom_density(aes(fill=type),alpha=0.5) +
@@ -547,7 +573,7 @@ tibble(outcome=c(to_stan_data$outcome_degen,to_stan_data$outcome_prop),
 
 mat_data <- rbind(treat_matrix_degen,treat_matrix_prop)[,-1]
 
-all_vars <- lapply(1:ncol(mat_data),function(c) {
+all_vars_con <- lapply(1:ncol(mat_data),function(c) {
   
   if(all(mat_data[!is.na(mat_data[,c]),c] %in% c(0,1))) {
     pred_data_high <- mat_data
@@ -588,30 +614,23 @@ all_vars <- lapply(1:ncol(mat_data),function(c) {
 
 # plot the marginal effects
 
-all_vars %>% 
-  group_by(variable) %>% 
+bind_rows(list(just_mean=all_vars,
+               with_phi=all_vars_con),.id="model") %>% 
+  group_by(variable,model) %>% 
   mutate(marg=marg*100) %>% 
   summarize(med_est=median(marg),
             high=quantile(marg,.95),
             low=quantile(marg,.05)) %>% 
   ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
-  geom_pointrange(aes(ymin=low,ymax=high)) +
+  geom_pointrange(aes(ymin=low,ymax=high,colour=model,shape=model),
+                  position=position_dodge(width=.5)) +
   theme_minimal() +
   geom_hline(yintercept = 0,linetype=2) +
   scale_y_continuous(labels=scales::dollar_format()) +
   coord_flip()
 
-all_vars %>% 
-  group_by(variable) %>% 
-  mutate(marg=marg*100) %>% 
-  summarize(med_est=median(marg),
-            high=quantile(marg,.95),
-            low=quantile(marg,.05)) %>% 
-  filter(variable %in% c("employees")) %>% 
-  ggplot(aes(y=med_est,x=reorder(variable,med_est))) +
-  geom_pointrange(aes(ymin=low,ymax=high)) +
-  geom_hline(yintercept = 0) +
-  theme_minimal() +
-  scale_y_continuous(labels=scales::dollar_format()) +
-  coord_flip()
 
+loo_phi <- loo(ord_beta_con,"ord_log")
+loo_mu <- loo(ord_beta_mydata,"ord_log")
+
+loo::loo_compare(loo_mu,loo_phi)

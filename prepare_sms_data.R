@@ -12,16 +12,19 @@ require(forcats)
 require(readr)
 
 # remove all mobile credits not in survey data
-jotform <- read_csv("data/Venezuela-Egypt-Ukraine-Mobile-Credit.csv")
+jotform <- read_csv("data/Clone-of-Clone-of-Venezuela-Egypt-Ukraine-Mobile-Credit.csv")
 
 names(jotform) <- c("Submission Date",
                     "Respondent ID",
                     "Network",
                     "Number",
-                    "Number2")
+                    "Number2",
+                    "Number3")
 
 to_sms <- jotform %>% 
   mutate(Number=coalesce(Number,Number2),
+         Number=coalesce(Number,Number3),
+         
          Country=case_when(Network %in% c("Kyivstar",
                                           "Lifecell",
                                           "Yezzz!",
@@ -41,6 +44,7 @@ to_sms <- jotform %>%
          Time=`Submission Date`,
          small_int=as.numeric(str_extract(just_credit,"[0-9]+")),
          Number=str_remove_all(Number,pattern = " "),
+         Number=str_remove_all(Number,pattern = "-"),
          Number=if_else(Country=="venezuela",paste0(substr(Number,1,3),
                                                     "-",
                                                     substr(Number,4,nchar(Number))),
